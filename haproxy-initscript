@@ -1,0 +1,209 @@
+#!/bin/bash
+#
+# chkconfig: - 99 99
+# description: Starts and stops the haproxy daemon
+#
+# pidfile: /var/run/haproxy.pid
+# config:  /etc/haproxy.conf
+
+# Source function library.
+if [ -f /etc/init.d/functions ] ; then
+  . /etc/init.d/functions
+elif [ -f /etc/rc.d/init.d/functions ] ; then
+  . /etc/rc.d/init.d/functions
+else
+  exit 1
+fi
+
+# Avoid using root's TMPDIR
+unset TMPDIR
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+if [ -f /etc/sysconfig/haproxy ]; then
+   . /etc/sysconfig/haproxy
+fi
+
+# Check that networking is up.
+[ ${NETWORKING} = "no" ] && exit 1
+
+# Check that our config exists (usually /etc/haproxy.cfg)
+[ -f $THIS_CONF ] || exit 6
+
+RETVAL=0
+base="$(basename $THIS_PROGRAM)"
+
+thisstart() {
+	echo -n $"Starting $base: "
+	daemon $THIS_PROGRAM -f $THIS_CONF $THIS_DAEMON_OPT -p $THIS_PIDFILE
+	RETVAL=$?
+	echo
+	return $RETVAL
+}	
+
+thisstop() {
+	[ -f $THIS_PIDFILE ] || { echo "pidfile missing"; return 2; }
+	checkpid $(cat $THIS_PIDFILE)
+	[ $? -eq 0 ]         || { echo "stale pidfile -- already stopped";   return 0; }
+
+	echo -n $"Shutting down listener: "
+	killproc -p $THIS_PIDFILE $base -SIGTTOU
+	RETVAL=$?
+	echo
+	echo -n $"Setting haproxy connections to shut down when closed: "
+	killproc -p $THIS_PIDFILE $base -SIGUSR1
+	RETVAL2=$?
+	echo
+	[ $RETVAL -eq 0 -a $RETVAL2 -eq 0 ] && { thisremovepidfile -f; return 0; }
+	return $(expr $RETVAL + $RETVAL2)
+}	
+
+thisrestart() {
+	thisstatus >/dev/null 2>&1
+	RETVAL=$?
+	if [ $RETVAL -eq 0 ]; then
+	  echo -n $"Shutting down old listener: "
+	  killproc -p $THIS_PIDFILE $base -SIGTTOU
+	  RETVAL2=$?
+	  [ $RETVAL2 -eq 0 ] && \mv $THIS_PIDFILE $THIS_PIDFILE.old
+	  echo
+	fi
+	thisstart
+	RETVAL3=$?
+	if [ "$RETVAL" -eq 0 -a "$RETVAL2" = 0 ]; then
+	  echo -n $"Shutting down old proxies: "
+	  killproc -p $THIS_PIDFILE.old $base -SIGUSR1
+	  RETVAL4=$?
+	  echo
+	fi
+	for thisret in $RETVAL2 $RETVAL3 $RETVAL4; do
+	  if [ ! -z "$thisret" -a $thisret -gt 0 ]; then
+	    RETVAL=$(expr $RETVAL + $thisret)
+	  fi
+	done
+
+	return $RETVAL
+}
+
+thisstatus() {
+	if [ -f $THIS_PIDFILE ]; then
+	  if [ ! -z "$(pidof $base)" ]; then
+	    echo "$base is running"
+	    return 0
+          else
+	    echo "pidfile $THIS_PIDFILE exists but $base does not appear to be running"
+	    return 3
+          fi
+	else
+	  if [ ! -z "$(pidof $base)" ]; then
+	    echo "pidfile $THIS_PIDFILE missing -- $base appears to be running"
+	    return 1
+	  else
+	    echo "$base does not appear to be running"
+	    return 2
+	  fi
+	fi
+}
+
+thiskill() {
+	status >/dev/null 2>&1
+	RETVAL=$?
+	case "$RETVAL" in
+		0)
+		  echo -n $"Killing $base: "
+		  killproc -p $THIS_PIDFILE $base
+		  RETVAL=$?
+		  echo
+		;;
+		1)
+		  echo -n $"Killing $base (pidfile missing): "
+		  killproc $base
+		  RETVAL=$?
+		  echo
+		;;
+	esac
+
+	return $RETVAL
+}
+
+thisremovepidfile() {
+	force=; [ "$1" = "-f" ] && { force=1; shift; }
+	[ -f $THIS_PIDFILE ] || { echo "pidfile missing"; return 1; }
+	checkpid $(cat $THIS_PIDFILE)
+	[ $? -eq 1 -o -z "$force" ] || { echo "pidfile not stale; try using -f"; return 2; }
+	rm -f $THIS_PIDFILE
+
+	RETVAL=$?; return $RETVAL
+}
+
+thisvalidate() {
+	if [ ! -z "$THIS_CHECK_CONF_OPT" ]; then
+	  $THIS_PROGRAM -f $THIS_CONF $THIS_CHECK_CONF_OPT
+	  RETVAL=$?
+	else
+	  echo "validation not supported; check /etc/sysconfig/haproxy"
+	  RETVAL=1
+	fi
+
+	return $RETVAL
+}
+
+thisdumpmem() {
+	[ -f $THIS_PIDFILE ] && { kill -QUIT $(cat $THIS_PIDFILE); RETVAL=$?; }
+	[ $? -eq 0 ] && echo "$base dumps logs to syslog on localhost by default"
+
+	return $RETVAL
+}
+
+thisdumpstatus() {
+	[ -f $THIS_PIDFILE ] && { kill -HUP $(cat $THIS_PIDFILE); RETVAL=$?; }
+	[ $? -eq 0 ] && echo "$base dumps logs to syslog on localhost by default"
+
+	return $RETVAL
+}
+
+# we have to define this because apparently, using pidof to find chrooted
+# processes just isn't in the cards, baby, yeah.
+__pids_pidof () 
+{ 
+    pidof -o $$ -o $PPID -o %PPID -x "$1" || pidof -o $$ -o $PPID -o %PPID -x "${1##*/}"
+}
+
+# Check that we can write to it... so non-root users stop here
+[ -w $THIS_CONF ] || exit 4
+
+case "$1" in
+  start)
+  	thisstart
+	;;
+  stop)
+  	thisstop
+	;;
+  restart)
+  	thisrestart
+	;;
+  kill)
+	thiskill
+	;;
+  status)
+	thisstatus
+	;;
+  fstatus)
+	status -p $THIS_PIDFILE $base
+	;;
+  validate)
+	thisvalidate
+	;;
+  dumpstatus)
+	thisdumpstatus
+	;;
+  dumpmem)
+	thisdumpmem
+	;;
+  *)
+	echo $"Usage: $0 {start|stop|restart|status|kill|validate|dumpstatus|dumpmem}"
+	exit 2
+esac
+
+exit $?

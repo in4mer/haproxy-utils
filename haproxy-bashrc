@@ -1,0 +1,236 @@
+# .bashrc
+
+# User specific aliases and functions
+
+haproxyConfDir="/usr/local/etc/haproxy"
+haproxyConf="${haproxyConfDir}/haproxy.cfg"
+haproxyTmpConf="${haproxyConf}.tmp"
+haproxyHostnameCommonString="haproxy"
+lockfile="/var/run/lbmutex"
+
+alias sob='source ~/.bashrc'
+
+alias vib='vi ~/.bashrc'
+
+lbedit() {
+  # set up the mutex
+  lblock || return 1
+
+  # first make sure it exists
+  [ -f "$haproxyConf" -a -r "$haproxyConf" ] || { echo "configuration file $haproxyConf missing or is not readable"; lbcleanup; return 1; }
+
+  # now let's make a writeable copy if it doesn't already exist
+  if [ ! -f "$haproxyTmpConf" ]; then
+    echo "creating new working copy.."; sleep 1
+    cp "$haproxyConf" "$haproxyTmpConf"
+  else
+    echo "working copy already exists.. resuming"
+    echo "if you want to discard the proposed changes, use lbrevert"
+    sleep 1
+  fi
+
+  if ! chmod u+w "$haproxyTmpConf"; then
+    echo ""
+    echo "chmod u+w $haproxyTmpConf failed -- bailing out"
+    lbcleanup
+    return 1
+  fi
+
+  # now we edit!
+  vim "$haproxyTmpConf"
+  wait
+
+  # if no edits were made, no reason to keep the temp file around
+  if lbdiff >/dev/null; then
+    echo "no changes made; discarding working copy"
+    \rm "$haproxyTmpConf"
+  fi
+
+  lbcleanup
+}
+
+lbhelp () {
+  cat <<STUFF
+
+lbhelp:		print this help
+lbedit:		edit a copy of the running configuration
+lbvalidate:	tests the proposed configuration file for coherency
+lbrevert:	erase the proposed configuration file without committing
+lbunlock:	unlocks editing the file if a connection is lost
+lbcommit:	tests proposed config, overwrites running config with new,
+		restarts haproxy, then synchronizes the config directory
+		to the secondary machine
+
+STUFF
+}
+
+lbcommit() {
+  # set up the mutex
+  lblock || return 1
+
+  # first make sure the base config exists
+  [ -f "$haproxyConf" -a -r "$haproxyConf" ] || { echo "configuration file $haproxyConf missing or is not readable"; lbcleanup; return 1; }
+  # now we make sure there's a working copy
+  [ -f "$haproxyTmpConf" -a -r "$haproxyTmpConf" ] || { echo "proposed configuration file $haproxyTmpConf missing or is not readable"; echo ""; echo "try running lbedit first"; lbcleanup; return 1; }
+
+  if haproxyValidateTmpConf; then
+    if co -q -l "$haproxyConf"; then
+      echo "checkout succeeded"
+      \mv "$haproxyTmpConf" "$haproxyConf"
+      ci -u "$haproxyConf"
+    else
+      echo "checkout failed; someone probably checked it out manually"
+      lbcleanup
+      return 1
+    fi # checkout test
+  else
+    lbcleanup
+    return $?
+  fi # conf validation
+
+  lbreload
+
+  lbsync
+
+  lbcleanup
+}
+
+lbreload() {
+  service haproxy restart
+}
+
+lbunlock() {
+  if ! lbIsLocked; then
+    printf "Not locked"
+    return 0
+  fi
+
+  printf "WARNING: Do not run this unless you are SURE no one else is actively\n"
+  printf "editing the configuration file.  Are you SURE? [N/y]: "
+
+  read ANSWER
+#  if [ ! -n "$ANSWER" ]; then
+#    echo "Not doing anything (probably a good choice)."
+#    return 0
+#  fi
+
+  for choice in "y" "ye" "yes" "yess" "Y" "Ye" "Yes" "Yess" "YE" "YES" "YESS" "YY" "YYY" "YYYY"; do
+    if [ "$ANSWER" = "$choice" ]; then
+      lbcleanup
+      return
+    fi
+  done
+
+  echo "Not doing anything (probably a good choice)."
+}
+
+lbcleanup () {
+  \rm "$lockfile"
+}
+
+lbsync () {
+  otherHost="$(fgrep ${haproxyHostnameCommonString} /etc/hosts | fgrep -v "$(uname -n)" | awk '{print $2}')"
+  [ -n "$otherHost" ] || { echo "Other host in configuration is not known"; return 1; }
+
+  echo "synchronizing configuration directory to $otherHost .. "
+  
+  rsync -are 'ssh' "${haproxyConfDir}/" "root@${otherHost}:${haproxyConfDir}/"
+  ret=$?
+  [ $ret -eq 0 ] && echo "done"
+
+  return $ret
+}
+
+lblock () {
+  # check for a lock
+  if lbIsLocked; then
+    echo "Someone is editing the configuration, please try again later"
+    return 1
+  fi
+
+  # check if we're primary LB
+  if ! haproxyCheckRunning; then
+    return 1
+  fi
+  
+  touch "$lockfile"
+
+  return $?
+}
+
+lbIsLocked() {
+  if [ -f "$lockfile" ]; then
+    return 0
+  fi
+
+  return 1 # only gets here if it's false
+}
+
+haproxyCheckRunning () {
+  if ! pidof haproxy >/dev/null; then
+cat <<STUFF
+
+haproxy isn't running; this machine is likely secondary.
+
+editing and synchronization are inhibited.
+
+if heartbeat is broken, or haproxy isn't starting, use
+"service haproxy validate" and "service haproxy start"
+to fix the configuration file and start haproxy.
+
+The configuration file to edit is $haproxyConf
+
+STUFF
+
+    return 1
+  fi
+
+  return 0
+}
+
+
+lbdiff() {
+  diff "$haproxyConf" "$haproxyTmpConf"
+  return $?
+}
+
+lbrevert() {
+  \rm "$haproxyTmpConf"
+}
+
+lbvalidate() {
+  if ! haproxyValidateTmpConf; then
+    haproxyValidateConf
+  fi
+}
+
+haproxyValidateConf () {
+  [ -f "$haproxyConf" ] || { echo "running configuration file missing"; return 1; }
+  echo -n "validating running configuration .. "
+  if ! haproxy -f "$haproxyConf" -c; then
+    echo
+    echo "try running lbedit or lbrevert"
+    echo
+    return 1
+  else
+    return 0
+  fi
+}
+
+haproxyValidateTmpConf () {
+  [ -f "$haproxyTmpConf" ] || { echo "proposed configuration file missing"; return 1; }
+  echo -n "validating proposed configuration .. "
+  if ! haproxy -f "$haproxyTmpConf" -c; then
+    echo
+    echo "try running lbedit or lbrevert"
+    echo
+    return 1
+  else
+    return 0
+  fi
+}
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+	. /etc/bashrc
+fi
