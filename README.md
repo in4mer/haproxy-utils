@@ -18,7 +18,9 @@ WRITTEN FOR CENTOS 5/6.  It may require some massaging of at least
 file locations if you intend to use it elsewhere.
 
 haproxy-initscript is supposed to go in /etc/init.d/
+
 haproxy-sysconfig is supposed to go in /etc/sysconfig/
+
 haproxy-bashrc is supposed to be sourced or pasted into your .bashrc
 
 
