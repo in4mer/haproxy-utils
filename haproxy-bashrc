@@ -5,7 +5,7 @@
 haproxyConfDir="/usr/local/etc/haproxy"
 haproxyConf="${haproxyConfDir}/haproxy.cfg"
 haproxyTmpConf="${haproxyConf}.tmp"
-haproxyHostnameCommonString="haproxy"
+haproxyHostnameCommonString="EDIT-FOR-YOUR-HOSTNAME-COMMON-STRING"
 lockfile="/var/run/lbmutex"
 
 alias sob='source ~/.bashrc'
@@ -37,11 +37,16 @@ lbedit() {
   fi
 
   # now we edit!
-  vim "$haproxyTmpConf"
-  wait
+  [ -n "$EDITOR" ] || EDITOR="vim"
+  $EDITOR "$haproxyTmpConf"
 
-  # if no edits were made, no reason to keep the temp file around
-  if lbdiff >/dev/null; then
+  if [ "$?" = "148" ]; then
+    echo "It looks like you've suspended the editor.  This script cant handle"
+    echo "re-entry, so your working copy is going to be saved, even if there"
+    echo "are no changes.  Please launch 'lbedit' again to re-aquire the"
+    echo "editing mutex."
+  elif lbdiff >/dev/null; then
+    # if no edits were made, no reason to keep the temp file around
     echo "no changes made; discarding working copy"
     \rm "$haproxyTmpConf"
   fi
@@ -60,6 +65,10 @@ lbunlock:	unlocks editing the file if a connection is lost
 lbcommit:	tests proposed config, overwrites running config with new,
 		restarts haproxy, then synchronizes the config directory
 		to the secondary machine
+
+Note:  If haproxy is not currently running, functionality will be limited,
+as this normally identifies a standby machine.  By design, editing is
+inhibited on the standby.
 
 STUFF
 }

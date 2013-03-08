@@ -1,0 +1,4 @@
+THIS_CONF=/usr/local/etc/haproxy/haproxy.cfg
+THIS_PROGRAM=/usr/local/sbin/haproxy
+THIS_PIDFILE=/var/run/haproxy.pid
+THIS_CHECK_CONF_OPT="-c"
