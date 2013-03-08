@@ -10,7 +10,7 @@ by sourcing or by cut & paste.
 lbhelp is the main help command once you're in the login shell that
 loads this utility.
 
-There are also included a couple things; one is an init.d script
+There are also a couple other things included; one is an init.d script
 for haproxy, and the other is the /etc/sysconfig/ configuration file
 that informs the init script.
 
